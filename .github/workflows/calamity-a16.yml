@@ -89,7 +89,9 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- 2>&1 | tee build.log
           [ -f out/arch/arm64/boot/Image ]
-
+      - name: Show first errors
+        if: failure()
+        run: grep -n -E "error:|undefined reference|No rule to make|Error 1" build.log | head -30
       - name: dtbo.img
         run: |
           D=out/arch/arm64/boot/dts
