@@ -85,7 +85,7 @@ jobs:
           make O=out ARCH=arm64 ${{ inputs.defconfig }}
           scripts/config --file out/.config --disable COMPAT_VDSO --disable THUMB2_COMPAT_VDSO
           make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            KCFLAGS="-Wno-strict-prototypes -Wno-deprecated-non-prototype -Wno-error" \
+            KCFLAGS="-Wno-strict-prototypes -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-function-pointer-types -Wno-error" \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
             CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- 2>&1 | tee build.log
