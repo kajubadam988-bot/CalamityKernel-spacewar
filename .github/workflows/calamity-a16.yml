@@ -18,11 +18,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Submodules (only needed ones)
+      - name: Submodules (dts only)
+        run: git submodule update --init --depth=1 arch/arm64/boot/dts/vendor
+
+      - name: Backslashxx KernelSU (Syscall Table Tampering, no SUSFS)
         run: |
-          git submodule update --init --depth=1 arch/arm64/boot/dts/vendor
+          set -e
           rm -rf KernelSU-Next
-          git clone --depth=1 -b master-susfs https://github.com/Willay24/KernelSU.git KernelSU-Next
+          git clone --depth=1 https://github.com/backslashxx/KernelSU.git KernelSU-Next
+          # drivers/kernelsu -> ../KernelSU-Next/kernel symlink already exists in tree
+          ls -la drivers/kernelsu
+          # remove old manual KSU hook in input.c (not needed with syscall table tampering)
+          python3 - <<'PY'
+          import re
+          p="drivers/input/input.c"; t=open(p).read()
+          t=re.sub(r'#ifdef CONFIG_KSU\n.*?#endif\n','',t,flags=re.S)
+          open(p,"w").write(t)
+          PY
+          # replace old KSU/SUSFS config with backslashxx config
+          D="arch/arm64/configs/${{ inputs.defconfig }}"
+          sed -i '/KSU/d' "$D"
+          printf '\n# KernelSU (backslashxx)\nCONFIG_KSU=y\nCONFIG_KSU_TAMPER_SYSCALL_TABLE=y\n' >> "$D"
+          grep -n "KSU" "$D"
 
       - name: Dependencies
         run: |
@@ -39,72 +56,42 @@ jobs:
           tar -xJf $N.tar.xz
           echo "$HOME/tc/$N/bin" >> $GITHUB_PATH
 
-      - name: SUSFS + KSU-Next 5.4 compat
+      - name: mkdtboimg
         run: |
-          set -e
-          if [ -f KernelSU-Next-5.4-compat2.patch ]; then
-            (cd KernelSU-Next && patch --forward -p1 < ../KernelSU-Next-5.4-compat2.patch || true)
-          else
-            echo "::warning::KernelSU-Next-5.4-compat2.patch missing"
-          fi
-          git clone --depth 1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git t_susfs
-          cp t_susfs/kernel_patches/include/linux/susfs*.h include/linux/
-          [ -f t_susfs/kernel_patches/include/linux/mac_user_macros.h ] && cp t_susfs/kernel_patches/include/linux/mac_user_macros.h include/linux/ || true
-          cp t_susfs/kernel_patches/fs/susfs.c fs/susfs.c
-          sed -i '1i #include <linux/cred.h>' include/linux/susfs_def.h
-          rm -rf t_susfs
-          python3 - <<'PY'
-          p="fs/susfs.c"; t=open(p).read()
-          old="""static const struct fsnotify_ops fsnotify_ops = {
-          \t.handle_inode_event = susfs_handle_sdcard_inode_event,
-          };"""
-          new="""#include <linux/version.h>
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
-          static const struct fsnotify_ops fsnotify_ops = {
-          \t.handle_inode_event = susfs_handle_sdcard_inode_event,
-          };
-          #else
-          static int susfs_handle_sdcard_event_compat(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data, int data_type, const struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)
-          {
-              return susfs_handle_sdcard_inode_event(NULL, mask, inode, NULL, file_name, cookie);
-          }
-          static const struct fsnotify_ops fsnotify_ops = {
-          \t.handle_event = susfs_handle_sdcard_event_compat,
-          };
-          #endif"""
-          import textwrap
-          old=textwrap.dedent(old); new=textwrap.dedent(new)
-          if old in t:
-              t=t.replace(old,new).replace("extern bool susfs_is_avc_log_spoofing_enabled;","bool susfs_is_avc_log_spoofing_enabled = false;")
-              open(p,"w").write(t); print("compat injected")
-          PY
+          wget -q "https://android.googlesource.com/platform/system/libufdt/+/refs/heads/master/utils/src/mkdtboimg.py?format=TEXT" -O m.b64
+          base64 -d m.b64 | sudo tee /usr/local/bin/mkdtboimg.py > /dev/null
+          sudo chmod +x /usr/local/bin/mkdtboimg.py
+          python3 /usr/local/bin/mkdtboimg.py --help > /dev/null
 
       - name: Build
         run: |
-          set -e
+          set -eo pipefail
           make O=out ARCH=arm64 ${{ inputs.defconfig }}
           scripts/config --file out/.config --disable COMPAT_VDSO --disable THUMB2_COMPAT_VDSO
-          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            KCFLAGS="-Wno-strict-prototypes -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-function-pointer-types -Wno-error" \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
+          grep -E "CONFIG_KSU" out/.config
+          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 CC=clang AR=llvm-ar NM=llvm-nm \
+            LD="ld.lld -S" OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- 2>&1 | tee build.log
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="-Wno-strict-prototypes -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-function-pointer-types -Wno-error" \
+            2>&1 | tee build.log
           [ -f out/arch/arm64/boot/Image ]
 
       - name: Show first errors
         if: failure()
-        run: grep -n -E "error:|undefined reference|No rule to make|Error 1" build.log | head -30
+        run: grep -n -E "error:|undefined reference|undefined symbol|No rule to make|Error 1" build.log | head -30
 
       - name: dtbo.img
         run: |
           D=out/arch/arm64/boot/dts
-          python3 scripts/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(find $D -name '*.dtbo' | sort)
+          python3 /usr/local/bin/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(find $D -name '*.dtbo' | sort)
 
       - name: AnyKernel3 zip
         run: |
           git clone --depth=1 https://github.com/William24hmar/AnyKernel3.git -b "${{ inputs.anykernel_branch }}" ak
           cp out/arch/arm64/boot/Image out/arch/arm64/boot/dtbo.img ak/
-          N="Calamity-${{ inputs.build_tag }}-KSUN-$(date +%Y%m%d-%H%M).zip"
+          N="Calamity-${{ inputs.build_tag }}-BXKSU-$(date +%Y%m%d-%H%M).zip"
           (cd ak && zip -r9 "../$N" . -x "*.git*" -x README.md)
           echo "ZIP=$N" >> $GITHUB_ENV
 
