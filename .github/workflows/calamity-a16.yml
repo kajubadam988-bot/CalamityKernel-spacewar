@@ -23,7 +23,7 @@ jobs:
         run: |
           git submodule update --init --depth=1 arch/arm64/boot/dts/vendor
           rm -rf KernelSU-Next
-          git clone --depth=1 -b dev_susfs https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          git clone --depth=1 -b master-susfs https://github.com/Willay24/KernelSU.git KernelSU-Next
 
       - name: Dependencies
         run: |
