@@ -19,9 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Submodules (only needed ones)
-        run: git submodule update --init --depth=1 KernelSU-Next arch/arm64/boot/dts/vendor
+        run: |
+          git submodule update --init --depth=1 arch/arm64/boot/dts/vendor
+          rm -rf KernelSU-Next
+          git clone --depth=1 -b dev_susfs https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+
       - name: Dependencies
         run: |
           sudo apt-get update
