@@ -82,15 +82,21 @@ jobs:
         if: failure()
         run: grep -n -E "error:|undefined reference|undefined symbol|No rule to make|Error 1" build.log | head -30
 
-      - name: dtbo.img
+      - name: dtbo.img (only if overlays were built)
         run: |
           D=out/arch/arm64/boot/dts
-          python3 /usr/local/bin/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(find $D -name '*.dtbo' | sort)
+          LIST=$(find $D -name '*.dtbo' | sort)
+          if [ -n "$LIST" ]; then
+            python3 /usr/local/bin/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $LIST
+          else
+            echo "No .dtbo built (DT_OVERLAY off) - zip will contain Image only, ROM's own dtbo stays"
+          fi
 
       - name: AnyKernel3 zip
         run: |
           git clone --depth=1 https://github.com/William24hmar/AnyKernel3.git -b "${{ inputs.anykernel_branch }}" ak
-          cp out/arch/arm64/boot/Image out/arch/arm64/boot/dtbo.img ak/
+          cp out/arch/arm64/boot/Image ak/
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img ak/ || true
           N="Calamity-${{ inputs.build_tag }}-BXKSU-$(date +%Y%m%d-%H%M).zip"
           (cd ak && zip -r9 "../$N" . -x "*.git*" -x README.md)
           echo "ZIP=$N" >> $GITHUB_ENV
