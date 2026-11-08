@@ -1,0 +1,107 @@
+# Place at: .github/workflows/calamity-a16.yml  (in your Calamity fork)
+# Builds Calamity (KSU-Next + SUSFS) -> AnyKernel3 zip for Android 16 (Evolution X) on NP1
+name: Calamity A16 KSU Zip
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: 'Defconfig'
+        default: 'spacewar_defconfig'
+      anykernel_branch:
+        description: 'William24hmar/AnyKernel3 branch (Android 16 flash script)'
+        default: 'master'
+      build_tag:
+        default: 'A16'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # KernelSU-Next + dts/vendor
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yq bc bison flex libssl-dev make libelf-dev lz4 cpio \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi device-tree-compiler \
+            python3 zip unzip git ccache wget curl xz-utils clang lld
+
+      - name: Slim LLVM toolchain
+        run: |
+          V=23.1.3; N=llvm-$V-x86_64
+          mkdir -p $HOME/tc && cd $HOME/tc
+          wget -q https://mirrors.edge.kernel.org/pub/tools/llvm/files/$N.tar.xz
+          tar -xJf $N.tar.xz
+          echo "$HOME/tc/$N/bin" >> $GITHUB_PATH
+
+      - name: SUSFS + KSU-Next 5.4 compat
+        run: |
+          set -e
+          if [ -f KernelSU-Next-5.4-compat2.patch ]; then
+            (cd KernelSU-Next && patch --forward -p1 < ../KernelSU-Next-5.4-compat2.patch || true)
+          else
+            echo "::warning::KernelSU-Next-5.4-compat2.patch missing - build may fail in KernelSU-Next"
+          fi
+          git clone --depth 1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git t_susfs
+          cp t_susfs/kernel_patches/include/linux/susfs*.h include/linux/
+          [ -f t_susfs/kernel_patches/include/linux/mac_user_macros.h ] && cp t_susfs/kernel_patches/include/linux/mac_user_macros.h include/linux/ || true
+          cp t_susfs/kernel_patches/fs/susfs.c fs/susfs.c
+          rm -rf t_susfs
+          python3 - <<'PY'
+          p="fs/susfs.c"; t=open(p).read()
+          old="""static const struct fsnotify_ops fsnotify_ops = {
+          \t.handle_inode_event = susfs_handle_sdcard_inode_event,
+          };"""
+          new="""#include <linux/version.h>
+          #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
+          static const struct fsnotify_ops fsnotify_ops = {
+          \t.handle_inode_event = susfs_handle_sdcard_inode_event,
+          };
+          #else
+          static int susfs_handle_sdcard_event_compat(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data, int data_type, const struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)
+          {
+              return susfs_handle_sdcard_inode_event(NULL, mask, inode, NULL, file_name, cookie);
+          }
+          static const struct fsnotify_ops fsnotify_ops = {
+          \t.handle_event = susfs_handle_sdcard_event_compat,
+          };
+          #endif"""
+          import textwrap
+          old=textwrap.dedent(old); new=textwrap.dedent(new)
+          if old in t:
+              t=t.replace(old,new).replace("extern bool susfs_is_avc_log_spoofing_enabled;","bool susfs_is_avc_log_spoofing_enabled = false;")
+              open(p,"w").write(t); print("compat injected")
+          PY
+
+      - name: Build
+        run: |
+          set -e
+          make O=out ARCH=arm64 ${{ inputs.defconfig }}
+          scripts/config --file out/.config --disable COMPAT_VDSO --disable THUMB2_COMPAT_VDSO
+          make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
+            CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- 2>&1 | tee build.log
+          [ -f out/arch/arm64/boot/Image ]
+
+      - name: dtbo.img
+        run: |
+          D=out/arch/arm64/boot/dts
+          python3 scripts/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $(find $D -name '*.dtbo' | sort)
+
+      - name: AnyKernel3 zip
+        run: |
+          git clone --depth=1 https://github.com/William24hmar/AnyKernel3.git -b "${{ inputs.anykernel_branch }}" ak
+          cp out/arch/arm64/boot/Image out/arch/arm64/boot/dtbo.img ak/
+          N="Calamity-${{ inputs.build_tag }}-KSUN-$(date +%Y%m%d-%H%M).zip"
+          (cd ak && zip -r9 "../$N" . -x "*.git*" -x README.md)
+          echo "ZIP=$N" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP }}
+          path: ${{ env.ZIP }}
+          
