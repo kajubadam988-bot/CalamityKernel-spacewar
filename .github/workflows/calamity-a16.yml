@@ -1,5 +1,3 @@
-# Place at: .github/workflows/calamity-a16.yml  (in your Calamity fork)
-# Builds Calamity (KSU-Next + SUSFS) -> AnyKernel3 zip for Android 16 (Evolution X) on NP1
 name: Calamity A16 KSU Zip
 
 on:
@@ -19,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Submodules (only needed ones)
         run: |
           git submodule update --init --depth=1 arch/arm64/boot/dts/vendor
@@ -46,12 +45,13 @@ jobs:
           if [ -f KernelSU-Next-5.4-compat2.patch ]; then
             (cd KernelSU-Next && patch --forward -p1 < ../KernelSU-Next-5.4-compat2.patch || true)
           else
-            echo "::warning::KernelSU-Next-5.4-compat2.patch missing - build may fail in KernelSU-Next"
+            echo "::warning::KernelSU-Next-5.4-compat2.patch missing"
           fi
           git clone --depth 1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git t_susfs
           cp t_susfs/kernel_patches/include/linux/susfs*.h include/linux/
           [ -f t_susfs/kernel_patches/include/linux/mac_user_macros.h ] && cp t_susfs/kernel_patches/include/linux/mac_user_macros.h include/linux/ || true
           cp t_susfs/kernel_patches/fs/susfs.c fs/susfs.c
+          sed -i '1i #include <linux/cred.h>' include/linux/susfs_def.h
           rm -rf t_susfs
           python3 - <<'PY'
           p="fs/susfs.c"; t=open(p).read()
@@ -85,13 +85,16 @@ jobs:
           make O=out ARCH=arm64 ${{ inputs.defconfig }}
           scripts/config --file out/.config --disable COMPAT_VDSO --disable THUMB2_COMPAT_VDSO
           make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            KCFLAGS="-Wno-strict-prototypes -Wno-deprecated-non-prototype -Wno-error" \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1 \
             CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- 2>&1 | tee build.log
           [ -f out/arch/arm64/boot/Image ]
+
       - name: Show first errors
         if: failure()
         run: grep -n -E "error:|undefined reference|No rule to make|Error 1" build.log | head -30
+
       - name: dtbo.img
         run: |
           D=out/arch/arm64/boot/dts
@@ -109,4 +112,3 @@ jobs:
         with:
           name: ${{ env.ZIP }}
           path: ${{ env.ZIP }}
-          
