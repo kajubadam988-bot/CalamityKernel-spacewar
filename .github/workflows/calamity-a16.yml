@@ -1,16 +1,16 @@
-name: Build crDroid 13 Kernel (Backslashxx KSU)
+name: Calamity A16 KSU Zip
 
 on:
   workflow_dispatch:
     inputs:
       defconfig:
         description: 'Defconfig'
-        default: 'vendor/lahaina-qgki_defconfig'
+        default: 'spacewar_defconfig'
       anykernel_branch:
-        description: 'William24hmar/AnyKernel3 branch'
+        description: 'William24hmar/AnyKernel3 branch (Android 16 flash script)'
         default: 'master'
       build_tag:
-        default: 'crDroid13'
+        default: 'A16'
 
 jobs:
   build:
@@ -18,15 +18,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Submodules (dts only)
+        run: git submodule update --init --depth=1 arch/arm64/boot/dts/vendor
+
       - name: Backslashxx KernelSU (Syscall Table Tampering, no SUSFS)
         run: |
           set -e
-          # replace crDroid's in-tree KernelSU with backslashxx KernelSU
-          rm -rf drivers/kernelsu KernelSU
-          git clone --depth=1 https://github.com/backslashxx/KernelSU.git KernelSU
-          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          rm -rf KernelSU-Next
+          git clone --depth=1 https://github.com/backslashxx/KernelSU.git KernelSU-Next
+          # drivers/kernelsu -> ../KernelSU-Next/kernel symlink already exists in tree
           ls -la drivers/kernelsu
-          grep -n "kernelsu" drivers/Makefile drivers/Kconfig
+          # remove old manual KSU hook in input.c (not needed with syscall table tampering)
+          python3 - <<'PY'
+          import re
+          p="drivers/input/input.c"; t=open(p).read()
+          t=re.sub(r'#ifdef CONFIG_KSU\n.*?#endif\n','',t,flags=re.S)
+          open(p,"w").write(t)
+          PY
           # replace old KSU/SUSFS config with backslashxx config
           D="arch/arm64/configs/${{ inputs.defconfig }}"
           sed -i '/KSU/d' "$D"
@@ -58,7 +66,7 @@ jobs:
       - name: Build
         run: |
           set -eo pipefail
-          make O=out ARCH=arm64 "${{ inputs.defconfig }}"
+          make O=out ARCH=arm64 ${{ inputs.defconfig }}
           scripts/config --file out/.config --disable COMPAT_VDSO --disable THUMB2_COMPAT_VDSO
           grep -E "CONFIG_KSU" out/.config
           make -j$(nproc) O=out ARCH=arm64 SUBARCH=arm64 CC=clang AR=llvm-ar NM=llvm-nm \
@@ -81,7 +89,7 @@ jobs:
           if [ -n "$LIST" ]; then
             python3 /usr/local/bin/mkdtboimg.py create out/arch/arm64/boot/dtbo.img $LIST
           else
-            echo "No .dtbo built - zip will contain Image only"
+            echo "No .dtbo built (DT_OVERLAY off) - zip will contain Image only, ROM's own dtbo stays"
           fi
 
       - name: AnyKernel3 zip
@@ -89,7 +97,7 @@ jobs:
           git clone --depth=1 https://github.com/William24hmar/AnyKernel3.git -b "${{ inputs.anykernel_branch }}" ak
           cp out/arch/arm64/boot/Image ak/
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img ak/ || true
-          N="Kernel-${{ inputs.build_tag }}-BXKSU-$(date +%Y%m%d-%H%M).zip"
+          N="Calamity-${{ inputs.build_tag }}-BXKSU-$(date +%Y%m%d-%H%M).zip"
           (cd ak && zip -r9 "../$N" . -x "*.git*" -x README.md)
           echo "ZIP=$N" >> $GITHUB_ENV
 
