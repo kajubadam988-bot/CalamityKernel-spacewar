@@ -19,9 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive   # KernelSU-Next + dts/vendor
 
+      - name: Submodules (only needed ones)
+        run: git submodule update --init --depth=1 KernelSU-Next arch/arm64/boot/dts/vendor
       - name: Dependencies
         run: |
           sudo apt-get update
